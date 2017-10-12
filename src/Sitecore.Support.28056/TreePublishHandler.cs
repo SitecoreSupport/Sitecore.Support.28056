@@ -11,12 +11,10 @@ using System.Reactive.Linq;
 using System.Threading;
 using Microsoft.AspNetCore.Hosting;
 using System.Threading.Tasks;
-using Sitecore.Framework.Publishing.PublishJobQueue;
-using Sitecore.Framework.Publishing;
-using Sitecore.Framework.Publishing.PublishJobQueue.Handlers;
-using Sitecore.Framework.Publishing.TemplateGraph;
 using Sitecore.Framework.Publishing.Data;
-using Sitecore.Framework.Publishing.Item;
+using Sitecore.Framework.Publishing.PublishJobQueue.Handlers;
+using Sitecore.Framework.Publishing;
+using Sitecore.Framework.Publishing.PublishJobQueue;
 
 namespace Sitecore.Support.Framework.Publishing.PublishJobQueue.Handlers
 {
@@ -60,24 +58,6 @@ namespace Sitecore.Support.Framework.Publishing.PublishJobQueue.Handlers
 
         #region Factories
 
-        protected override IPublishCandidateSource CreatePublishCandidateSource(
-            PublishContext publishContext,
-            ITemplateGraph templateGraph,
-            IRequiredPublishFieldsResolver publishingFields)
-        {
-            return new Sitecore.Support.Framework.Publishing.ManifestCalculation.PublishCandidateSource(
-                publishContext.SourceStore.Name,
-                publishContext.SourceStore.GetItemReadRepository(),
-                publishContext.ItemsRelationshipStore.GetItemRelationshipRepository(),
-                templateGraph,
-                publishContext.SourceStore.GetWorkflowStateRepository(),
-                publishContext.PublishOptions.Languages.Select(Language.Parse).ToArray(),
-                _requiredPublishFieldsResolver.PublishingFieldsIds,
-                publishingFields.MediaFieldsIds,
-                _options.ContentAvailability);
-        }
-
-
         protected override ISourceObservable<CandidateValidationContext> CreatePublishSourceStream(
             PublishContext publishContext,
             IPublishCandidateSource publishSourceRepository,
@@ -112,20 +92,9 @@ namespace Sitecore.Support.Framework.Publishing.PublishJobQueue.Handlers
                     startNode,
                     publishContext.PublishOptions.GetBucketTemplateId(),
                     errorSource,
-                    _loggerFactory.CreateLogger<BucketNodeSourceProducer>());
+                    _loggerFactory.CreateLogger<BucketNodeSourceProducer>(),
+                    _loggerFactory.CreateLogger<DiagnosticLogger>());
             }
-
-            publishSourceStream = new DeletedNodesSourceProducer(
-                publishSourceStream,
-                publishContext.Started,
-                publishContext.PublishOptions.Languages,
-                publishContext.PublishOptions.Targets,
-                new string[] { publishContext.PublishOptions.GetPublishType() },
-                publisherOperationService,
-                _options.UnpublishedOperationsLoadingBatchSize,
-                errorSource,
-                _loggerFactory.CreateLogger<DeletedNodesSourceProducer>(),
-                op => op.Path.Ancestors.Contains(publishContext.PublishOptions.ItemId.Value));
 
             return publishSourceStream;
         }
@@ -140,7 +109,7 @@ namespace Sitecore.Support.Framework.Publishing.PublishJobQueue.Handlers
             CancellationTokenSource errorSource,
             Guid targetId)
         {
-            // Source items - Create target publish stream -> PublishCandidateTargetContext
+            //   Source items -Create target publish stream->PublishCandidateTargetContext
             IPublishCandidateTargetValidator parentValidator = null;
             if (publishContext.PublishOptions.GetItemBucketsEnabled())
             {
@@ -155,7 +124,30 @@ namespace Sitecore.Support.Framework.Publishing.PublishJobQueue.Handlers
                 publishStream,
                 parentValidator,
                 errorSource,
-                _loggerFactory.CreateLogger<CandidatesParentValidationTargetProducer>());
+                publishContext.SourceStore.GetItemReadRepository(),
+                _loggerFactory.CreateLogger<CandidatesParentValidationTargetProducer>(),
+                _loggerFactory.CreateLogger<DiagnosticLogger>());
+
+            publishStream = new CandidatesValidationTargetProducer(
+                publishStream,
+                validator,
+                targetId,
+                errorSource,
+                _loggerFactory.CreateLogger<CandidatesValidationTargetProducer>(),
+                 _loggerFactory.CreateLogger<DiagnosticLogger>());
+
+            if (_options.DeleteOphanedItems && publishContext.PublishOptions.Descendants)
+            {
+                var orphanStream = new OrphanedItemValidationTargetProducer(publishStream,
+                    targetIndex,
+                    publishContext.SourceStore.GetItemReadRepository(),
+                    _options,
+                    errorSource,
+                    _loggerFactory.CreateLogger<OrphanedItemValidationTargetProducer>(),
+                     _loggerFactory.CreateLogger<DiagnosticLogger>());
+
+                publishStream = publishStream.Merge(orphanStream);
+            }
 
             return base.CreateTargetProcessingStream(
                 publishContext,

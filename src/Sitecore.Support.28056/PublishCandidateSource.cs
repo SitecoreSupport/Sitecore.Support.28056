@@ -264,44 +264,38 @@ namespace Sitecore.Support.Framework.Publishing.ManifestCalculation
             var fieldsToMerge = Enumerable.Empty<IFieldData>();
             var isMedia = IsMediaItem(node);
             var isClone = IsClonedItem(node);
-
             if (isClone)
+            {
+                var sourceItemId = ParseSitecoreItemUriField(node.InvariantFields, PublishingConstants.Clones.SourceItem);
+                if (sourceItemId != null)
                 {
-                  var sourceItemId = ParseSitecoreItemUriField(node.InvariantFields, PublishingConstants.Clones.SourceItem);
-
-                    if (sourceItemId != null && GetSourceNodeFieldsData(sourceItemId.Id) != null && GetSourceNodeFieldsData(sourceItemId.Id).Result!=null)
+                    var sourceNodeFieldsData = GetSourceNodeFieldsData(sourceItemId.Id).Result.ToArray();
+                    if (sourceNodeFieldsData.Any())
                     {
-                           var sourceNodeFieldsData = GetSourceNodeFieldsData(sourceItemId.Id).Result.ToArray();
+                        // Only find fields in standards values that don't have values in the cloned item
+                        var fieldsOnlyInStandardValues =
+                            standardValuesFields.Where(x => sourceNodeFieldsData.All(s => s.FieldId != x.FieldId));
 
-                            if (sourceNodeFieldsData.Any())
-                            {
-                                // Only find fields in standards values that don't have values in the cloned item
-                                var fieldsOnlyInStandardValues =
-                                    standardValuesFields.Where(x => sourceNodeFieldsData.All(s => s.FieldId != x.FieldId));
-
-                                // append to the standard values fields
-                                fieldsToMerge = sourceNodeFieldsData.Concat(fieldsOnlyInStandardValues).ToArray();
-                            }                        
-                    }
-                    else
-                    {
-                        fieldsToMerge = standardValuesFields;
+                        // append to the standard values fields
+                        fieldsToMerge = sourceNodeFieldsData.Concat(fieldsOnlyInStandardValues).ToArray();
                     }
                 }
-                else
-                {
-                    fieldsToMerge = standardValuesFields;
-                }
+            }
+            else
+            {
+                fieldsToMerge = standardValuesFields;
+            }
 
-                var finalItem = MergeFieldDataValues(node, fieldsToMerge);
+            var finalItem = MergeFieldDataValues(node, fieldsToMerge);
 
-                var sharedRestrictions = ExtractSharedRestrictions(finalItem, _contentAvailabilityEnabled);
-                return new PublishCandidate(
-                               node,
-                               sharedRestrictions,
-                               ExtractVariantRestrictions(finalItem, sharedRestrictions),
-                               isMedia,
-                               isClone);  
+            var sharedRestrictions = ExtractSharedRestrictions(finalItem, _contentAvailabilityEnabled);
+
+            return new PublishCandidate(
+                node,
+                sharedRestrictions,
+                ExtractVariantRestrictions(finalItem, sharedRestrictions),
+                isMedia,
+                isClone);
         }
 
         private bool IsClonedItem(IItemNode node)
@@ -325,8 +319,6 @@ namespace Sitecore.Support.Framework.Publishing.ManifestCalculation
         private async Task<IEnumerable<IFieldData>> GetSourceNodeFieldsData(Guid sourceNodeId)
         {
             var sourceNode = await _itemReadRepo.GetItemNode(sourceNodeId, _queryContext).ConfigureAwait(false);
-            if (sourceNode == null)
-                return null;
             var fieldData = sourceNode.VariantFields.SelectMany(x => x.Value)
                           .Concat(sourceNode.InvariantFields)
                           .Concat(sourceNode.LanguageVariantFields.SelectMany(x => x.Value));
@@ -440,26 +432,7 @@ namespace Sitecore.Support.Framework.Publishing.ManifestCalculation
                         PublishingConstants.PublishingFields.Versioned.HideVersion,
                         false);
 
-                var currentWorkflowState = ParseSitecoreGuidField(
-                    variant.Value,
-                    PublishingConstants.WorkflowFields.WorkflowState,
-                    null);
-
-                // build the func that decides if the item is in a publishCandidate state for a given target.
-                Predicate<Guid> inPublishableWorkflowStateForTarget = target => true;
-
-                if (itemPublishRestrictions.Workflow.HasValue && currentWorkflowState.HasValue)
-                {
-                    IPublishableWorkflowState targetState;
-                    if (_publishableStates.TryGetValue(currentWorkflowState.Value, out targetState))
-                    {
-                        inPublishableWorkflowStateForTarget = target => targetState.IsPublishableFor(target);
-                    }
-                    else
-                    {
-                        inPublishableWorkflowStateForTarget = target => false;
-                    }
-                }
+                var inPublishableWorkflowStateForTarget = IsInPublishableWorkflowStateForTarget(itemPublishRestrictions, ref variant);
 
                 var validFrom = ParseSitecoreDateField(
                     variant.Value,
@@ -474,18 +447,25 @@ namespace Sitecore.Support.Framework.Publishing.ManifestCalculation
                 var nextVariances = variantFields.Where(x => x.Key.Language.Equals(variantFields[i].Key.Language)
                            && x.Key.Version > variantFields[i].Key.Version).ToList();
 
-                if (_contentAvailabilityEnabled && DateTime.Equals(validTo, DateTime.MaxValue) && nextVariances.Any())
+                if (_contentAvailabilityEnabled && DateTime.Equals(validTo, MaxUtc) && nextVariances.Any())
                 {
                     var nextVariance = nextVariances.FirstOrDefault(x => x.Key.Version == variantFields[i].Key.Version + 1);
 
                     if (nextVariance.Value != null)
                     {
-                        validTo = ParseSitecoreDateField(
-                                    nextVariance.Value,
-                                       PublishingConstants.PublishingFields.Versioned.ValidFrom,
-                                       MaxUtc);
+                        var nextVarianceWorkflowState = ParseSitecoreGuidField(
+                                                          nextVariance.Value,
+                                                          PublishingConstants.WorkflowFields.WorkflowState,
+                                                          null);
 
-                        if (VarianceOverriddenByNewerVariance(nextVariances, validFrom) && validTo != DateTime.MaxValue)
+                        if (!nextVarianceWorkflowState.HasValue || _publishableStates.ContainsKey(nextVarianceWorkflowState.Value))
+                        {
+                            validTo = ParseSitecoreDateField(nextVariance.Value,
+                                                             PublishingConstants.PublishingFields.Versioned.ValidFrom,
+                                                             MaxUtc);
+                        }
+
+                        if (VarianceOverriddenByNewerVariance(nextVariances, validFrom) && validTo != MaxUtc)
                         {
                             isPublishable = false;
                         }
@@ -513,17 +493,43 @@ namespace Sitecore.Support.Framework.Publishing.ManifestCalculation
             return variantRestrictions;
         }
 
+        private Predicate<Guid> IsInPublishableWorkflowStateForTarget(ItemPublishRestrictions itemPublishRestrictions, ref KeyValuePair<IVarianceIdentity, IReadOnlyList<IFieldData>> variant)
+        {
+            var currentWorkflowState = ParseSitecoreGuidField(
+                variant.Value,
+                PublishingConstants.WorkflowFields.WorkflowState,
+                null);
+
+            // build the func that decides if the item is in a publishCandidate state for a given target.
+            Predicate<Guid> inPublishableWorkflowStateForTarget = target => true;
+
+            if (itemPublishRestrictions.Workflow.HasValue && currentWorkflowState.HasValue)
+            {
+                IPublishableWorkflowState targetState;
+                if (_publishableStates.TryGetValue(currentWorkflowState.Value, out targetState))
+                {
+                    inPublishableWorkflowStateForTarget = target => targetState.IsPublishableFor(target);
+                }
+                else
+                {
+                    inPublishableWorkflowStateForTarget = target => false;
+                }
+            }
+
+            return inPublishableWorkflowStateForTarget;
+        }
+
         private bool VarianceOverriddenByNewerVariance(IEnumerable<KeyValuePair<IVarianceIdentity, IReadOnlyList<IFieldData>>> nextVariances, DateTime varianceValidFrom)
         {
             return nextVariances.Any(delegate (KeyValuePair<IVarianceIdentity, IReadOnlyList<IFieldData>> nextVariant)
-            {
-                var variantValidFrom = ParseSitecoreDateField(
-                    nextVariant.Value,
-                    PublishingConstants.PublishingFields.Versioned.ValidFrom,
-                    MaxUtc);
+                {
+                    var variantValidFrom = ParseSitecoreDateField(
+                        nextVariant.Value,
+                        PublishingConstants.PublishingFields.Versioned.ValidFrom,
+                        MaxUtc);
 
-                return variantValidFrom < varianceValidFrom;
-            });
+                    return variantValidFrom < varianceValidFrom;
+                });
         }
 
         private static bool ParseSitecoreBoolField(IEnumerable<IFieldData> fields, Guid fieldId, bool defaultValue)
