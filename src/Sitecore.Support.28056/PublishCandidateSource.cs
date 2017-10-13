@@ -267,7 +267,7 @@ namespace Sitecore.Support.Framework.Publishing.ManifestCalculation
       if (isClone)
       {
         var sourceItemId = ParseSitecoreItemUriField(node.InvariantFields, PublishingConstants.Clones.SourceItem);
-        if (sourceItemId != null)
+        if (sourceItemId != null && GetSourceNodeFieldsData(sourceItemId.Id) != null && GetSourceNodeFieldsData(sourceItemId.Id).Result != null)
         {
           var sourceNodeFieldsData = GetSourceNodeFieldsData(sourceItemId.Id).Result.ToArray();
           if (sourceNodeFieldsData.Any())
@@ -279,6 +279,10 @@ namespace Sitecore.Support.Framework.Publishing.ManifestCalculation
             // append to the standard values fields
             fieldsToMerge = sourceNodeFieldsData.Concat(fieldsOnlyInStandardValues).ToArray();
           }
+        }
+        else
+        {
+          fieldsToMerge = standardValuesFields;
         }
       }
       else
@@ -319,6 +323,8 @@ namespace Sitecore.Support.Framework.Publishing.ManifestCalculation
     private async Task<IEnumerable<IFieldData>> GetSourceNodeFieldsData(Guid sourceNodeId)
     {
       var sourceNode = await _itemReadRepo.GetItemNode(sourceNodeId, _queryContext).ConfigureAwait(false);
+      if (sourceNode == null)
+        return null;
       var fieldData = sourceNode.VariantFields.SelectMany(x => x.Value)
                     .Concat(sourceNode.InvariantFields)
                     .Concat(sourceNode.LanguageVariantFields.SelectMany(x => x.Value));
