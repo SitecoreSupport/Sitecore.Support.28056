@@ -8,8 +8,13 @@ using Sitecore.Framework.Publishing.DataPromotion;
 using Sitecore.Framework.Publishing.ManifestCalculation;
 using Sitecore.Framework.Publishing.PublisherOperations;
 using System.Threading;
+using Sitecore.Framework.Publishing;
+using Sitecore.Framework.Publishing.Item;
+using Sitecore.Framework.Publishing.PublishJobQueue;
+using Sitecore.Framework.Publishing.PublishJobQueue.Handlers;
+using Sitecore.Framework.Publishing.TemplateGraph;
 
-namespace Sitecore.Framework.Publishing.PublishJobQueue.Handlers
+namespace Sitecore.Support.Framework.Publishing.PublishJobQueue.Handlers
 {
   using System.Linq;
   using Sitecore.Framework.Publishing.Data;
@@ -91,6 +96,22 @@ namespace Sitecore.Framework.Publishing.PublishJobQueue.Handlers
           _loggerFactory.CreateLogger<DiagnosticLogger>());
     }
     #endregion
+    protected override IPublishCandidateSource CreatePublishCandidateSource(
+      PublishContext publishContext,
+      ITemplateGraph templateGraph,
+      IRequiredPublishFieldsResolver publishingFields)
+    {
+      return new Sitecore.Support.Framework.Publishing.ManifestCalculation.PublishCandidateSource(
+        publishContext.SourceStore.Name,
+        publishContext.SourceStore.GetItemReadRepository(),
+        publishContext.ItemsRelationshipStore.GetItemRelationshipRepository(),
+        templateGraph,
+        publishContext.SourceStore.GetWorkflowStateRepository(),
+        publishContext.PublishOptions.Languages.Select(Language.Parse).ToArray(),
+        _requiredPublishFieldsResolver.PublishingFieldsIds,
+        publishingFields.MediaFieldsIds,
+        _options.ContentAvailability);
+    }
 
     public override bool CanHandle(PublishJob job, PublishContext publishContext) => !job.Options.ItemId.HasValue;
 
