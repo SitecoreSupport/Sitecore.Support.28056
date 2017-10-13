@@ -15,6 +15,8 @@ using Sitecore.Framework.Publishing.Data;
 using Sitecore.Framework.Publishing.PublishJobQueue.Handlers;
 using Sitecore.Framework.Publishing;
 using Sitecore.Framework.Publishing.PublishJobQueue;
+using Sitecore.Framework.Publishing.TemplateGraph;
+using Sitecore.Framework.Publishing.Item;
 
 namespace Sitecore.Support.Framework.Publishing.PublishJobQueue.Handlers
 {
@@ -57,6 +59,23 @@ namespace Sitecore.Support.Framework.Publishing.PublishJobQueue.Handlers
     { }
 
     #region Factories
+
+    protected override IPublishCandidateSource CreatePublishCandidateSource(
+      PublishContext publishContext,
+      ITemplateGraph templateGraph,
+      IRequiredPublishFieldsResolver publishingFields)
+    {
+      return new Sitecore.Support.Framework.Publishing.ManifestCalculation.PublishCandidateSource(
+        publishContext.SourceStore.Name,
+        publishContext.SourceStore.GetItemReadRepository(),
+        publishContext.ItemsRelationshipStore.GetItemRelationshipRepository(),
+        templateGraph,
+        publishContext.SourceStore.GetWorkflowStateRepository(),
+        publishContext.PublishOptions.Languages.Select(Language.Parse).ToArray(),
+        _requiredPublishFieldsResolver.PublishingFieldsIds,
+        publishingFields.MediaFieldsIds,
+        _options.ContentAvailability);
+    }
 
     protected override ISourceObservable<CandidateValidationContext> CreatePublishSourceStream(
         PublishContext publishContext,
